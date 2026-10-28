@@ -17,13 +17,17 @@ import java.io.IOException;
 import java.util.Collections;
 import java.util.UUID;
 
+/**
+ * Filter that extracts the Bearer JWT token from HTTP requests, verifies the cryptographic signature,
+ * and populates the OrgContextHolder and Spring SecurityContext with the tenant and user claims.
+ */
 @Component
 public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
-    private final JwtTokenProvider tokenProvider;
+    private final JwtTokenService jwtTokenService;
 
-    public JwtAuthenticationFilter(JwtTokenProvider tokenProvider) {
-        this.tokenProvider = tokenProvider;
+    public JwtAuthenticationFilter(JwtTokenService jwtTokenService) {
+        this.jwtTokenService = jwtTokenService;
     }
 
     @Override
@@ -34,21 +38,31 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     ) throws ServletException, IOException {
         String token = resolveToken(request);
 
-        if (StringUtils.hasText(token) && tokenProvider.validateToken(token)) {
-            UUID userId = tokenProvider.getUserId(token);
-            UUID orgId = tokenProvider.getOrgId(token);
-            String role = tokenProvider.getRole(token);
+        if (StringUtils.hasText(token) && jwtTokenService.validateToken(token)) {
+            // Verify this is an access token, not a refresh token
+            if (!jwtTokenService.isRefreshToken(token)) {
+                UUID userId = jwtTokenService.getUserId(token);
+                UUID orgId = jwtTokenService.getOrgId(token);
+                String orgType = jwtTokenService.getOrgType(token);
+                String role = jwtTokenService.getRole(token);
 
-            String correlationId = OrgContextHolder.getCorrelationId().orElse("unknown");
-            OrgContext context = new OrgContext(orgId, "user", userId, role, correlationId);
-            OrgContextHolder.set(context);
+                String correlationId = OrgContextHolder.getCorrelationId().orElse("unknown");
+                OrgContext context = new OrgContext(
+                        orgId,
+                        orgType != null ? orgType : "anonymous",
+                        userId,
+                        role != null ? role : "ANONYMOUS",
+                        correlationId
+                );
+                OrgContextHolder.set(context);
 
-            UsernamePasswordAuthenticationToken authentication = new UsernamePasswordAuthenticationToken(
-                    userId,
-                    null,
-                    Collections.singletonList(new SimpleGrantedAuthority("ROLE_" + role))
-            );
-            SecurityContextHolder.getContext().setAuthentication(authentication);
+                UsernamePasswordAuthenticationToken authentication = new UsernamePasswordAuthenticationToken(
+                        userId,
+                        null,
+                        Collections.singletonList(new SimpleGrantedAuthority("ROLE_" + (role != null ? role : "USER")))
+                );
+                SecurityContextHolder.getContext().setAuthentication(authentication);
+            }
         }
 
         filterChain.doFilter(request, response);
